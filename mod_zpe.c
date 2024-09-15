@@ -142,6 +142,8 @@ static int zpe_handler(request_rec *r) {
         ap_rputs(buffer, r); // Send the output to the client
     }
 
+    ap_rputs("<!--Powered by ZPE and Apache-->", r);
+
     close(pipefd[0]);
 
     return OK;
