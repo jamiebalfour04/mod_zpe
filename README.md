@@ -6,7 +6,13 @@ mod_zpe is an Apache module for the ZPE Programming Environment and the YASS lan
 
 <ul>
   <li>
-    Copy all files as shown into a folder on your computer
+    Copy all files as listed into a folder on your computer
+  </li>
+  <li>
+    Make sure you have the latest version of ZPE from jamiebalfour.scot.
+  </li>
+  <li>
+    Copy zpe.jar into a folder in the root called <code>/zpe/</code>
   </li>
   <li>
     Make sure make.sh is executable (<code>chmod 755 make.sh</code>)
