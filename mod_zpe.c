@@ -94,14 +94,6 @@ static int zpe_handler(request_rec *r) {
     // The path to the JAR file (you can modify this or pass it as a parameter)
     const char *jar_path = "/zpe/zpe.jar";
 
-    /*
-    // Invoke the Java class
-    int result = invoke_java_class(r, jar_path);
-
-    // Send a response back to the client
-    ap_rputs("Java application executed.\n", r);
-    return result;*/
-
     // Redirect stdout to capture Java output
     int pipefd[2];
     if (pipe(pipefd) == -1) {
