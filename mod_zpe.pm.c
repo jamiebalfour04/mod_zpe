@@ -209,6 +209,9 @@ static int call_zpepm(request_rec *r, const char *document_root, const char *uri
     char *path_escaped = json_escape(p, real_path);
     char *type_escaped = json_escape(p, script_type);
 
+    const char *cookie_header = apr_table_get(r->headers_in, "Cookie");
+    char *cookie_escaped = json_escape(p, cookie_header ? cookie_header : "");
+
     char *request_json = apr_psprintf(
         p,
         "{"
@@ -218,10 +221,12 @@ static int call_zpepm(request_rec *r, const char *document_root, const char *uri
         "\"script_type\":\"%s\","
         "\"timeout_ms\":5000,"
         "\"execution_profile\":\"web\","
+        "\"cookie\":\"%s\","
         "\"stream\":false"
         "}",
         path_escaped,
-        type_escaped
+        type_escaped,
+        cookie_escaped
     );
 
     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "mod_zpe: request JSON: %s", request_json);
@@ -231,9 +236,19 @@ static int call_zpepm(request_rec *r, const char *document_root, const char *uri
 
     int sock = zpepm_connect();
     if (sock < 0) {
-        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "mod_zpe: could not connect to ZPE-PM at %s:%d", ZPEPM_HOST, ZPEPM_PORT);
-        ap_rputs("Could not connect to ZPE-PM.\n", r);
-        return HTTP_INTERNAL_SERVER_ERROR;
+      ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+          "mod_zpe: ZPE-PM not reachable at %s:%d", ZPEPM_HOST, ZPEPM_PORT);
+
+      r->status = HTTP_SERVICE_UNAVAILABLE; // 503 is better than 500
+      ap_set_content_type(r, "text/html; charset=utf-8");
+
+      ap_rputs(
+          "<h1>Service Unavailable</h1>"
+          "<p>ZPE backend is currently offline. Please try again later.</p>",
+          r
+      );
+
+      return OK; // important: we handled the response
     }
 
     if (send_all(sock, (const char *)&req_len_be, 4) < 0 ||
@@ -280,6 +295,12 @@ static int call_zpepm(request_rec *r, const char *document_root, const char *uri
      int ok = json_get_bool(resp_json, "ok");
      char *output_b64 = json_get_string(p, resp_json, "output");
      char *error = json_get_string(p, resp_json, "error");
+     char *set_cookie = json_get_string(p, resp_json, "set_cookie");
+
+     if (set_cookie && *set_cookie) {
+        apr_table_add(r->headers_out, "Set-Cookie", set_cookie);
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "mod_zpe: setting cookie: %s", set_cookie);
+     }
 
      int decoded_len = 0;
      char *output = base64_decode_to_pool(p, output_b64, &decoded_len);
