@@ -223,6 +223,7 @@ static int call_zpepm(request_rec *r, const char *document_root, const char *uri
         "\"execution_profile\":\"web\","
         "\"cookie\":\"%s\","
         "\"stream\":false"
+        "\"requester\":\"apache\""
         "}",
         path_escaped,
         type_escaped,
