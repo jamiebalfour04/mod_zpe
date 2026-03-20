@@ -2,12 +2,12 @@
 
 mod_zpe is an Apache module for the ZPE Programming Environment and the YASS language. Use this to add support for the YASS language into the Apache Web Server. 
 
-# mod_zpe.runtime.c #
+## mod_zpe.runtime.c
 <p>
   This version of mod_zpe is designed to run each script through the runtime and then close. It's slow but has more support.
 </p>
 
-# mod_zpe.pm.c #
+## mod_zpe.pm.c
 <p>
   This version of mod_zpe uses ZPE-PM and communicates using sockets. This is much faster but is only supported with version 1.14.4+.
 </p>
