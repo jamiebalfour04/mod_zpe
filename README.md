@@ -53,6 +53,21 @@ mod_zpe is an Apache module for the ZPE Programming Environment and the YASS lan
   </li>
 </ul>
 
+## Apache HTTPD setup
+<pre>
+&lt;VirtualHost *:80&gt;
+  DocumentRoot /var/www/mywebsite/
+
+  ServerName localhost
+  &lt;Directory "/var/www/mywebsite/"&gt;
+        AddHandler zpe .ywp .yas .yep .yex
+  &lt;/Directory&gt;
+
+&lt;/VirtualHost&gt;
+</pre>
+AddHandler zpe .yas
+AddHandler zpe .ywp
+
 ## index.ywp
 
 YASS Web Pages or YWP files work by embedding YASS code within <code>&lt;?ywp</code> and <code>ywp?&gt;</code>
