@@ -101,13 +101,7 @@ static char *build_real_path(apr_pool_t *p, const char *document_root, const cha
     }
 }
 
-/*
- * Very small JSON string extractor for simple flat JSON objects.
- * Supports:
- *   "key":"value"
- *   "key" : "value"
- */
- static char *json_get_string(apr_pool_t *p, const char *json, const char *key) {
+static char *json_get_string(apr_pool_t *p, const char *json, const char *key) {
     char *key_pos = strstr(json, key);
     if (!key_pos) return apr_pstrdup(p, "");
 
@@ -131,13 +125,6 @@ static char *build_real_path(apr_pool_t *p, const char *document_root, const cha
     return apr_pstrndup(p, start, pos - start);
 }
 
-/*
- * Supports:
- *   "ok":true
- *   "ok":"true"
- *   "ok" : true
- *   "ok" : "true"
- */
 static int json_get_bool(const char *json, const char *key) {
     char pattern_true1[128];
     char pattern_true2[128];
@@ -186,6 +173,44 @@ static char *base64_decode_to_pool(apr_pool_t *p, const char *b64, int *decoded_
     return out;
 }
 
+static char *read_post_body(request_rec *r) {
+    apr_pool_t *p = r->pool;
+
+    if (ap_setup_client_block(r, REQUEST_CHUNKED_DECHUNK) != OK) {
+        return apr_pstrdup(p, "");
+    }
+
+    if (!ap_should_client_block(r)) {
+        return apr_pstrdup(p, "");
+    }
+
+    char buffer[8192];
+    apr_off_t total = 0;
+    apr_size_t capacity = 8192;
+    char *body = apr_pcalloc(p, capacity + 1);
+
+    long len_read;
+    while ((len_read = ap_get_client_block(r, buffer, sizeof(buffer))) > 0) {
+        if ((apr_size_t)(total + len_read) >= capacity) {
+            apr_size_t new_capacity = capacity * 2;
+            while ((apr_size_t)(total + len_read) >= new_capacity) {
+                new_capacity *= 2;
+            }
+
+            char *new_body = apr_pcalloc(p, new_capacity + 1);
+            memcpy(new_body, body, (size_t)total);
+            body = new_body;
+            capacity = new_capacity;
+        }
+
+        memcpy(body + total, buffer, (size_t)len_read);
+        total += len_read;
+    }
+
+    body[total] = '\0';
+    return body;
+}
+
 static int call_zpepm(request_rec *r, const char *document_root, const char *uri) {
     apr_pool_t *p = r->pool;
 
@@ -212,6 +237,22 @@ static int call_zpepm(request_rec *r, const char *document_root, const char *uri
     const char *cookie_header = apr_table_get(r->headers_in, "Cookie");
     char *cookie_escaped = json_escape(p, cookie_header ? cookie_header : "");
 
+    const char *remote_ip = r->connection->client_ip;
+    const char *query_string = r->args ? r->args : "";
+    char *query_escaped = json_escape(p, query_string);
+
+    const char *request_method = r->method ? r->method : "";
+    char *method_escaped = json_escape(p, request_method);
+
+    const char *content_type = apr_table_get(r->headers_in, "Content-Type");
+    char *content_type_escaped = json_escape(p, content_type ? content_type : "");
+
+    char *post_body = apr_pstrdup(p, "");
+    if (r->method_number == M_POST) {
+        post_body = read_post_body(r);
+    }
+    char *post_body_escaped = json_escape(p, post_body ? post_body : "");
+
     char *request_json = apr_psprintf(
         p,
         "{"
@@ -222,12 +263,24 @@ static int call_zpepm(request_rec *r, const char *document_root, const char *uri
         "\"timeout_ms\":5000,"
         "\"execution_profile\":\"web\","
         "\"cookie\":\"%s\","
-        "\"stream\":false"
+        "\"stream\":false,"
+        "\"document_root\":\"%s\","
+        "\"remote_address\":\"%s\","
+        "\"request_method\":\"%s\","
+        "\"query_string\":\"%s\","
+        "\"content_type\":\"%s\","
+        "\"post_body\":\"%s\","
         "\"requester\":\"apache\""
         "}",
         path_escaped,
         type_escaped,
-        cookie_escaped
+        cookie_escaped,
+        json_escape(p, document_root),
+        json_escape(p, remote_ip ? remote_ip : ""),
+        method_escaped,
+        query_escaped,
+        content_type_escaped,
+        post_body_escaped
     );
 
     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "mod_zpe: request JSON: %s", request_json);
@@ -240,7 +293,7 @@ static int call_zpepm(request_rec *r, const char *document_root, const char *uri
       ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
           "mod_zpe: ZPE-PM not reachable at %s:%d", ZPEPM_HOST, ZPEPM_PORT);
 
-      r->status = HTTP_SERVICE_UNAVAILABLE; // 503 is better than 500
+      r->status = HTTP_SERVICE_UNAVAILABLE;
       ap_set_content_type(r, "text/html; charset=utf-8");
 
       ap_rputs(
@@ -249,7 +302,7 @@ static int call_zpepm(request_rec *r, const char *document_root, const char *uri
           r
       );
 
-      return OK; // important: we handled the response
+      return OK;
     }
 
     if (send_all(sock, (const char *)&req_len_be, 4) < 0 ||
@@ -283,50 +336,40 @@ static int call_zpepm(request_rec *r, const char *document_root, const char *uri
 
     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "mod_zpe: raw response JSON: %s", resp_json);
 
-    /*
-     * Current ZPE-PM response shape:
-     * {
-     *   "output" : "<base64>",
-     *   "id" : "apache-request",
-     *   "ok" : "true",
-     *   "error" : "",
-     *   "exec_ms" : "71"
-     * }
-     */
-     int ok = json_get_bool(resp_json, "ok");
-     char *output_b64 = json_get_string(p, resp_json, "output");
-     char *error = json_get_string(p, resp_json, "error");
-     char *set_cookie = json_get_string(p, resp_json, "set_cookie");
+    int ok = json_get_bool(resp_json, "ok");
+    char *output_b64 = json_get_string(p, resp_json, "output");
+    char *error = json_get_string(p, resp_json, "error");
+    char *set_cookie = json_get_string(p, resp_json, "set_cookie");
 
-     if (set_cookie && *set_cookie) {
+    if (set_cookie && *set_cookie) {
         apr_table_add(r->headers_out, "Set-Cookie", set_cookie);
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "mod_zpe: setting cookie: %s", set_cookie);
-     }
+    }
 
-     int decoded_len = 0;
-     char *output = base64_decode_to_pool(p, output_b64, &decoded_len);
+    int decoded_len = 0;
+    char *output = base64_decode_to_pool(p, output_b64, &decoded_len);
 
-     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "mod_zpe: parsed ok: %d", ok);
-     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "mod_zpe: parsed output field length: %ld", output_b64 ? (long)strlen(output_b64) : 0L);
-     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "mod_zpe: decoded output length: %d", decoded_len);
+    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "mod_zpe: parsed ok: %d", ok);
+    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "mod_zpe: parsed output field length: %ld", output_b64 ? (long)strlen(output_b64) : 0L);
+    ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "mod_zpe: decoded output length: %d", decoded_len);
 
-     if (!ok) {
-         r->status = HTTP_INTERNAL_SERVER_ERROR;
-         ap_rputs("<h1>ZPE-PM Execution Error</h1>\n", r);
-         if (error && *error) {
-             ap_rputs("<pre>", r);
-             ap_rputs(error, r);
-             ap_rputs("</pre>", r);
-         }
-         return HTTP_INTERNAL_SERVER_ERROR;
-     }
+    if (!ok) {
+        r->status = HTTP_INTERNAL_SERVER_ERROR;
+        ap_rputs("<h1>ZPE-PM Execution Error</h1>\n", r);
+        if (error && *error) {
+            ap_rputs("<pre>", r);
+            ap_rputs(error, r);
+            ap_rputs("</pre>", r);
+        }
+        return HTTP_INTERNAL_SERVER_ERROR;
+    }
 
-     if (decoded_len > 0) {
-         ap_rwrite(output, decoded_len, r);
-         ap_rflush(r);
-     } else {
-         ap_rputs("Decoded output is EMPTY", r);
-     }
+    if (decoded_len > 0) {
+        ap_rwrite(output, decoded_len, r);
+        ap_rflush(r);
+    } else {
+        ap_rputs("Decoded output is EMPTY", r);
+    }
 
     return OK;
 }
@@ -338,7 +381,7 @@ static int zpe_handler(request_rec *r) {
 
     ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "mod_zpe: handling request for URI: %s", r->uri);
 
-    if (r->method_number != M_GET) {
+    if (r->method_number != M_GET && r->method_number != M_POST) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r, "mod_zpe: method not allowed: %s", r->method);
         return HTTP_METHOD_NOT_ALLOWED;
     }
